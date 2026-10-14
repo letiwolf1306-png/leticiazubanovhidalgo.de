@@ -1,1 +1,326 @@
 
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10152d">
+  <title>Sternenfänger</title>
+  <style>
+    :root { color-scheme: dark; --ink:#f7f5ff; --muted:#b8bad3; }
+    * { box-sizing:border-box }
+    body {
+      margin:0; min-height:100vh; display:grid; place-items:center; padding:22px;
+      color:var(--ink); font-family:system-ui,-apple-system,Segoe UI,sans-serif;
+      background:radial-gradient(ellipse at 50% 0%,#293467 0,#151a35 48%,#0b1022 100%);
+    }
+    .game { width:min(100%,560px); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 2px 12px; }
+    h1 { margin:0; font-size:clamp(1.35rem,5vw,1.8rem); }
+    .stats { display:flex; gap:9px; }
+    .stat { min-width:82px; padding:8px 12px; text-align:center; background:#171d3bdd; border:1px solid #ffffff18; border-radius:14px; }
+    .stat small { display:block; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; }
+    .stat strong { font-size:1.2rem; }
+    .frame { position:relative; overflow:hidden; border:1px solid #ffffff25; border-radius:20px; box-shadow:0 22px 70px #0007; background:#111832; }
+    canvas { display:block; width:100%; height:auto; aspect-ratio:3/4; touch-action:none; }
+    .overlay { position:absolute; inset:0; display:grid; place-items:center; padding:24px; background:#0b1022b8; text-align:center; backdrop-filter:blur(5px); }
+    .overlay[hidden] { display:none; }
+    .card { max-width:350px; }
+    .emoji { font-size:3.2rem; line-height:1; margin-bottom:12px; }
+    .card h2 { margin:0 0 8px; font-size:1.7rem; }
+    .card p { margin:0 0 20px; color:var(--muted); line-height:1.5; }
+    button { font:inherit; color:var(--ink); cursor:pointer; border:1px solid #ffffff30; background:#ffffff12; border-radius:14px; }
+    button:focus-visible { outline:3px solid #ffd76a; outline-offset:3px; }
+    .start { padding:12px 24px; font-weight:750; color:#251831; background:linear-gradient(135deg,#ffe681,#ff9bb9); border:0; box-shadow:0 8px 24px #ff9bb944; }
+    .help { margin:12px 4px 0; color:var(--muted); text-align:center; font-size:.9rem; }
+    .touch { display:none; justify-content:center; gap:18px; margin-top:14px; }
+    .touch button { width:76px; height:56px; font-size:1.5rem; background:#ffffff12; }
+    @media (pointer:coarse) { .touch { display:flex } }
+    @media(max-width:420px) { body { padding:14px } .stat { min-width:70px; padding:7px 9px } }
+  </style>
+</head>
+<body>
+  <main class="game">
+    <header>
+      <h1>🌙 Sternenfänger</h1>
+      <div class="stats" aria-live="polite">
+        <div class="stat"><small>Punkte</small><strong id="score">0</strong></div>
+        <div class="stat"><small>Rekord</small><strong id="best">0</strong></div>
+      </div>
+    </header>
+
+    <div class="frame">
+      <canvas id="game" width="480" height="640"
+        aria-label="Fange Sterne und weiche Meteoriten aus"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="card">
+          <div class="emoji" id="overlayEmoji">🌟</div>
+          <h2 id="overlayTitle">Fang die Sterne!</h2>
+          <p id="overlayText">Bewege dein Raumschiff nach links und rechts. Sammle goldene Sterne und weiche den Meteoriten aus.</p>
+          <button class="start" id="start">Spiel starten</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="touch" aria-label="Touch-Steuerung">
+      <button id="left" aria-label="Nach links">◀</button>
+      <button id="right" aria-label="Nach rechts">▶</button>
+    </div>
+    <p class="help">Steuerung: ← → oder A / D · Auf dem Handy die Pfeile nutzen</p>
+  </main>
+
+  <script>
+    (() => {
+      const canvas = document.querySelector('#game');
+      const ctx = canvas.getContext('2d');
+      const scoreEl = document.querySelector('#score');
+      const bestEl = document.querySelector('#best');
+      const overlay = document.querySelector('#overlay');
+      const player = { x: 240, y: 565, speed: 340 };
+      const keys = { left: false, right: false };
+
+      let stars = [], rocks = [], particles = [];
+      let score = 0;
+      let best = Number(localStorage.getItem('sternenfaenger-best') || 0);
+      let running = false, last = 0, starTimer = 0, rockTimer = 0;
+
+      bestEl.textContent = best;
+
+      function background() {
+        const gradient = ctx.createLinearGradient(0, 0, 0, 640);
+        gradient.addColorStop(0, '#101832');
+        gradient.addColorStop(1, '#202448');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 480, 640);
+
+        for (let i = 0; i < 55; i++) {
+          const x = (i * 97 + 23) % 480;
+          const y = (i * 151 + performance.now() * .012 * (i % 3 + 1)) % 640;
+          ctx.globalAlpha = .25 + (i % 5) * .12;
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          ctx.arc(x, y, i % 7 === 0 ? 1.8 : 1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function drawShip() {
+        ctx.save();
+        ctx.translate(player.x, player.y);
+
+        ctx.fillStyle = '#ff8ea9';
+        ctx.beginPath();
+        ctx.moveTo(-10, 12); ctx.lineTo(-18, 28); ctx.lineTo(-3, 19); ctx.fill();
+
+        ctx.fillStyle = '#79e2ff';
+        ctx.beginPath();
+        ctx.moveTo(10, 12); ctx.lineTo(18, 28); ctx.lineTo(3, 19); ctx.fill();
+
+        ctx.fillStyle = '#f5f3ff';
+        ctx.beginPath();
+        ctx.moveTo(0, -21);
+        ctx.quadraticCurveTo(22, -4, 15, 16);
+        ctx.lineTo(-15, 16);
+        ctx.quadraticCurveTo(-22, -4, 0, -21);
+        ctx.fill();
+
+        ctx.fillStyle = '#70d9ff';
+        ctx.beginPath();
+        ctx.ellipse(0, -3, 6, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffd76a';
+        ctx.beginPath();
+        ctx.moveTo(-6, 16); ctx.lineTo(0, 32); ctx.lineTo(6, 16); ctx.fill();
+        ctx.restore();
+      }
+
+      function drawStar(star) {
+        ctx.save();
+        ctx.translate(star.x, star.y);
+        ctx.rotate(star.spin);
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = '#ffd76a';
+        ctx.fillStyle = '#ffdf72';
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const angle = -Math.PI / 2 + i * Math.PI / 5;
+          const radius = i % 2 ? 7 : 15;
+          ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawRock(rock) {
+        ctx.save();
+        ctx.translate(rock.x, rock.y);
+        ctx.rotate(rock.spin);
+        ctx.shadowBlur = 14;
+        ctx.shadowColor = '#ff547e';
+        ctx.fillStyle = '#ff6b7f';
+        ctx.beginPath();
+        for (let i = 0; i < 9; i++) {
+          const angle = i * Math.PI * 2 / 9;
+          const radius = rock.r * (i % 2 ? .82 : 1);
+          ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function burst(x, y, color) {
+        for (let i = 0; i < 10; i++) {
+          particles.push({
+            x, y, vx: (Math.random() - .5) * 180,
+            vy: (Math.random() - .5) * 180, life: .5, color
+          });
+        }
+      }
+
+      function hitCircle(x, y, radius) {
+        const dx = x - player.x, dy = y - player.y;
+        return dx * dx + dy * dy < (radius + 17) * (radius + 17);
+      }
+
+      function update(dt) {
+        if (keys.left) player.x -= player.speed * dt;
+        if (keys.right) player.x += player.speed * dt;
+        player.x = Math.max(26, Math.min(454, player.x));
+
+        starTimer -= dt;
+        rockTimer -= dt;
+
+        if (starTimer <= 0) {
+          stars.push({ x: 24 + Math.random() * 432, y: -20, speed: 150 + Math.random() * 70, spin: 0 });
+          starTimer = Math.max(.32, .75 - score * .012);
+        }
+        if (rockTimer <= 0) {
+          rocks.push({
+            x: 24 + Math.random() * 432, y: -24,
+            r: 15 + Math.random() * 9,
+            speed: 170 + Math.random() * 100 + score * 2,
+            spin: Math.random() * 6
+          });
+          rockTimer = Math.max(.38, 1.05 - score * .009);
+        }
+
+        stars.forEach(star => { star.y += star.speed * dt; star.spin += dt * 2; });
+        rocks.forEach(rock => { rock.y += rock.speed * dt; rock.spin += dt * 1.5; });
+
+        stars = stars.filter(star => {
+          if (hitCircle(star.x, star.y, 12)) {
+            score++;
+            scoreEl.textContent = score;
+            burst(star.x, star.y, '#ffdf72');
+            return false;
+          }
+          return star.y < 670;
+        });
+
+        for (const rock of rocks) {
+          if (hitCircle(rock.x, rock.y, rock.r)) {
+            burst(player.x, player.y, '#ff718c');
+            endGame();
+            return;
+          }
+        }
+        rocks = rocks.filter(rock => rock.y < 680);
+
+        particles.forEach(p => {
+          p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+        });
+        particles = particles.filter(p => p.life > 0);
+      }
+
+      function draw() {
+        background();
+        stars.forEach(drawStar);
+        rocks.forEach(drawRock);
+        particles.forEach(p => {
+          ctx.globalAlpha = Math.max(0, p.life * 2);
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x, p.y, 4, 4);
+        });
+        ctx.globalAlpha = 1;
+        if (running) drawShip();
+      }
+
+      function loop(now) {
+        const dt = Math.min((now - last) / 1000 || 0, .04);
+        last = now;
+        if (running) update(dt);
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function startGame() {
+        score = 0;
+        scoreEl.textContent = '0';
+        stars = []; rocks = []; particles = [];
+        player.x = 240;
+        starTimer = .35; rockTimer = 1;
+        running = true;
+        overlay.hidden = true;
+        last = performance.now();
+      }
+
+      function endGame() {
+        running = false;
+        if (score > best) {
+          best = score;
+          localStorage.setItem('sternenfaenger-best', best);
+          bestEl.textContent = best;
+        }
+        document.querySelector('#overlayEmoji').textContent = '💫';
+        document.querySelector('#overlayTitle').textContent = 'Vorbei!';
+        document.querySelector('#overlayText').textContent =
+          `Du hast ${score} ${score === 1 ? 'Stern' : 'Sterne'} gefangen. Bereit für eine neue Runde?`;
+        document.querySelector('#start').textContent = 'Nochmal spielen';
+        overlay.hidden = false;
+      }
+
+      document.querySelector('#start').addEventListener('click', startGame);
+
+      addEventListener('keydown', event => {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') event.preventDefault();
+        if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') keys.left = true;
+        if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') keys.right = true;
+        if ((event.key === ' ' || event.key === 'Enter') && !running) startGame();
+      });
+
+      addEventListener('keyup', event => {
+        if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') keys.left = false;
+        if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') keys.right = false;
+      });
+
+      function holdButton(id, key) {
+        const button = document.querySelector(id);
+        button.addEventListener('pointerdown', event => {
+          event.preventDefault();
+          keys[key] = true;
+          button.setPointerCapture(event.pointerId);
+        });
+        ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(type =>
+          button.addEventListener(type, () => keys[key] = false)
+        );
+      }
+
+      holdButton('#left', 'left');
+      holdButton('#right', 'right');
+
+      canvas.addEventListener('pointermove', event => {
+        if (event.pointerType === 'touch' && running) {
+          const rect = canvas.getBoundingClientRect();
+          player.x = (event.clientX - rect.left) / rect.width * 480;
+        }
+      });
+
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
